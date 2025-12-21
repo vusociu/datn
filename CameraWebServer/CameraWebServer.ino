@@ -36,6 +36,7 @@
 
 
 #define RELAY_PIN 4
+#define LOCK_STATUS_PIN 13
 
 // ===========================
 // Enter your WiFi credentials
@@ -60,6 +61,10 @@ void publishMessage(const char* topic, const char* message);
 
 bool cameraInitialized = false;
 bool mqttConnected = false;
+bool doorOpening = false;
+unsigned long doorOpenStart = 0;
+const unsigned long DOOR_OPEN_TIME = 500;
+int lastLockState = HIGH;
 
 WiFiClient espClient;
 PubSubClient client(espClient);
@@ -223,11 +228,10 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   Serial.println(message);
 
   if (strcmp(topic, mqtt_topic) == 0) {
-    if (message == "ON") {
-      Serial.print("Open door");
-          digitalWrite(RELAY_PIN, LOW);   // RELAY ON (ACTIVE LOW)
-          delay(3000);                    // mở cửa 3 giây
-          digitalWrite(RELAY_PIN, HIGH);  // RELAY OFF
+    if (message == "ON" && !doorOpening) {
+      digitalWrite(RELAY_PIN, LOW);
+      doorOpening = true;
+      doorOpenStart = millis();
     }
   }
 }
@@ -247,6 +251,7 @@ void setup() {
   Serial.begin(115200);
   Serial.setDebugOutput(true);
   pinMode(RELAY_PIN, OUTPUT);
+  pinMode(LOCK_STATUS_PIN, INPUT_PULLUP);
   digitalWrite(RELAY_PIN, HIGH);
   Serial.println("System started. Press button to start camera stream.");
 
@@ -286,5 +291,22 @@ void loop() {
     connectMQTT();
   }
   client.loop();
+
+  int lockState = digitalRead(LOCK_STATUS_PIN);
+  if (lockState != lastLockState) {
+    lastLockState = lockState;
+
+    if (lockState == LOW) {
+      client.publish("door/status", "LOCKED");
+    } else {
+      client.publish("door/status", "OPEN");
+    }
+  }
+
+  if (doorOpening && millis() - doorOpenStart >= DOOR_OPEN_TIME) {
+    digitalWrite(RELAY_PIN, HIGH);
+    doorOpening = false;
+  }
+
   delay(100); // Small delay to prevent excessive polling
 }

@@ -1,14 +1,20 @@
-from flask import Flask, Response
+from flask import Flask, Response, request
 import cv2
 import face_recognition
 import os
 import numpy as np
+import threading
+import time
+from mqtt_service import MQTTService
 
 # ESP32-CAM stream URL
 CAMERA_URL = "http://192.168.1.12:81/stream"
 
 app = Flask(__name__)
-cap = cv2.VideoCapture(CAMERA_URL)
+# cap = cv2.VideoCapture(CAMERA_URL)
+
+# Initialize MQTT Service
+mqtt_service = MQTTService()
 
 # === Khởi tạo biến toàn cục ===
 FACE_DIR = "faces"
@@ -27,6 +33,24 @@ def save_face_image(face_image, user_id):
     filename = os.path.join(user_dir, f"{count + 1}.jpg")
     cv2.imwrite(filename, face_image)
     print(f"Saved face of id_{user_id} -> {filename}")
+
+
+
+# Topic Handlers
+def recognition_handler(message):
+    """Handler for RECOGNITION topic"""
+    print(f"Recognition status: {message}")
+    if message == "1":
+        print("Camera system activated")
+        # Có thể thêm logic để bắt đầu nhận diện khuôn mặt
+    elif message == "0":
+        print("Camera system deactivated")
+
+
+def door_status_handler(message):
+    """Handler for door/status topic"""
+    print(f"Door status: {message}")
+    # Có thể thêm logic để xử lý trạng thái cửa
 
 
 def generate():
@@ -109,5 +133,52 @@ def stream():
     return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 
+@app.route('/test_publish', methods=['POST'])
+def test_publish():
+    """Test endpoint to publish MQTT message via POST request"""
+    try:
+        data = request.get_json()
+
+        if not data:
+            return {"error": "No JSON data provided"}, 400
+
+        topic = data.get('topic')
+        message = data.get('message')
+
+        if not topic or not message:
+            return {"error": "Both 'topic' and 'message' are required"}, 400
+
+        success = mqtt_service.publish_message(topic, message)
+        if success:
+            return {
+                "success": True,
+                "message": f"Published '{message}' to topic '{topic}'"
+            }
+        else:
+            return {"error": "Failed to publish message"}, 500
+
+    except Exception as e:
+        return {"error": f"Failed to publish: {str(e)}"}, 500
+
+
+@app.route('/status')
+def status():
+    """Get system status"""
+    mqtt_status = mqtt_service.get_connection_status()
+    return {
+        'status': 'running',
+        'mqtt': mqtt_status,
+        'known_faces': len(known_ids),
+        'camera_url': CAMERA_URL,
+        'face_recognition_enabled': True
+    }
+
+
 if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=5000)
+    # Subscribe to topics
+    mqtt_service.subscribe("door/status", door_status_handler)
+
+    mqtt_service.connect()
+
+    # Start Flask app
+    app.run(host='0.0.0.0', port=5000, debug=False)
