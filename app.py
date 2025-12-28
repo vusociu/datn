@@ -13,13 +13,18 @@ from facenet_service import FaceNetService
 # Camera index (0 = first laptop webcam)
 CAMERA_URL = 0  # Temporarily using laptop camera, can be changed to "http://192.168.1.12:81/stream" when using ESP32-CAM
 
+SERVER_DOOR_STATUS="server/door/status"
+SERVER_DOOR_EXECUTE="server/door/execute"
+
+DEVICE_DOOR_OPEN="device/door/open"
+
 app = Flask(__name__)
 cap = None  # Will be initialized when needed
 
 # Initialize MQTT Service
 mqtt_service = MQTTService()
 
-redis = RedisService(host="192.168.5.51", port=6379, db=1, password="Omt@1234")
+redis = RedisService(host="192.168.72.221", port=6379, db=1, password="Omt@1234")
 
 doors = [
     "door_1",
@@ -233,7 +238,7 @@ def door_excute_handler(message):
         redis.hset("data_door", {empty_door: json.dumps(door_data)})
         
         # Send message to open door
-        mqtt_service.publish("device/door/open", json.dumps({"door": empty_door}), qos=1)
+        mqtt_service.publish(DEVICE_DOOR_OPEN, json.dumps({"door": empty_door}), qos=1)
         print(f"Assigned door {empty_door} to user_id {user_id}")
         
     elif message == "GET":
@@ -260,7 +265,7 @@ def door_excute_handler(message):
             return
         
         # Send message to open door
-        mqtt_service.publish("device/door/open", json.dumps({"door": door_name}), qos=1)
+        mqtt_service.publish(DEVICE_DOOR_OPEN, json.dumps({"door": door_name}), qos=1)
         print(f"Opened door {door_name} for user_id {user_id}")
         
         # Clear door data after retrieving (or mark as empty)
@@ -401,8 +406,8 @@ def status():
 
 if __name__ == "__main__":
     # Subscribe to topics
-    mqtt_service.subscribe("server/door/status", door_status_handler)
-    mqtt_service.subscribe("server/door/execute", door_excute_handler)
+    mqtt_service.subscribe(SERVER_DOOR_STATUS, door_status_handler)
+    mqtt_service.subscribe(SERVER_DOOR_EXECUTE, door_excute_handler)
 
     mqtt_service.connect()
 

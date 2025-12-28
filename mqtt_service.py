@@ -6,7 +6,7 @@ import socket, uuid
 class MQTTService:
     def __init__(
         self,
-        broker="192.168.5.51",
+        broker="192.168.72.221",
         port=1883,
         username="vund",
         password="131003",
