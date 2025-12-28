@@ -6,9 +6,9 @@ import socket, uuid
 class MQTTService:
     def __init__(
         self,
-        broker="192.168.1.44",
+        broker="192.168.5.51",
         port=1883,
-        username="admin",
+        username="vund",
         password="131003",
         client_id = f"FaceRec-{socket.gethostname()}-{uuid.uuid4().hex[:6]}",
     ):
