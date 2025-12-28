@@ -34,9 +34,30 @@
 //#define CAMERA_MODEL_DFRobot_Romeo_ESP32S3 // Has PSRAM
 #include "camera_pins.h"
 
+// ===========================
+// Door Configuration - 4 doors
+// ===========================
+// Relay pins để mở khóa (LOW = mở, HIGH = đóng)
+#define RELAY_PIN_1 4
+#define RELAY_PIN_2 5
+#define RELAY_PIN_3 6
+#define RELAY_PIN_4 7
 
-#define RELAY_PIN 4
-#define LOCK_STATUS_PIN 13
+// Status pins để đọc trạng thái khóa (LOW = đóng, HIGH = mở)
+#define LOCK_STATUS_PIN_1 1
+#define LOCK_STATUS_PIN_2 2
+#define LOCK_STATUS_PIN_3 15
+#define LOCK_STATUS_PIN_4 16
+
+// Button pins để gửi execute SEND và GET
+#define BUTTON_SEND_PIN 17
+#define BUTTON_GET_PIN 18
+
+// Door names matching app.py
+const char* DOOR_1 = "door_1";
+const char* DOOR_2 = "door_2";
+const char* DOOR_3 = "door_3";
+const char* DOOR_4 = "door_4";
 
 // ===========================
 // Enter your WiFi credentials
@@ -51,20 +72,47 @@ const char *mqtt_server = "192.168.1.44";
 const int mqtt_port = 1883;
 const char *mqtt_user = "admin";
 const char *mqtt_pass = "131003";
-const char *mqtt_topic = "RECOGNITION";
+const char *mqtt_topic_device_door_open = "device/door/open";
+const char *mqtt_topic_server_door_status = "server/door/status";
+const char *mqtt_topic_server_door_execute = "server/door/execute";
 
 void startCameraServer();
 void setupLedFlash(int pin);
 void initCameraAndServer();
 void connectMQTT();
 void publishMessage(const char* topic, const char* message);
+int getDoorIndex(const char* doorName);
+int getRelayPin(int doorIndex);
+int getStatusPin(int doorIndex);
+const char* getDoorName(int doorIndex);
+void openDoor(int doorIndex);
+String parseJsonDoor(const String& jsonMessage);
+void checkButtonPresses();
+
+// Door opening state tracking
+struct DoorState {
+  bool opening;
+  unsigned long openStart;
+  int lastLockState;
+};
+
+DoorState doorStates[4] = {
+  {false, 0, HIGH},
+  {false, 0, HIGH},
+  {false, 0, HIGH},
+  {false, 0, HIGH}
+};
 
 bool cameraInitialized = false;
 bool mqttConnected = false;
-bool doorOpening = false;
-unsigned long doorOpenStart = 0;
-const unsigned long DOOR_OPEN_TIME = 500;
-int lastLockState = HIGH;
+const unsigned long DOOR_OPEN_TIME = 500; // milliseconds
+
+// Button debounce variables
+int lastButtonSendState = HIGH;
+int lastButtonGetState = HIGH;
+unsigned long lastDebounceTimeSend = 0;
+unsigned long lastDebounceTimeGet = 0;
+const unsigned long DEBOUNCE_DELAY = 200; // milliseconds
 
 WiFiClient espClient;
 PubSubClient client(espClient);
@@ -204,7 +252,8 @@ void connectMQTT() {
 
     if (client.connect(clientId.c_str(), mqtt_user, mqtt_pass)) {
       Serial.println("connected");
-      subscribeTopic("RECOGNITION");
+      // Subscribe to device/door/open topic để nhận lệnh mở cửa từ server
+      subscribeTopic(mqtt_topic_device_door_open);
       mqttConnected = true;
     } else {
       Serial.print("failed, rc=");
@@ -227,13 +276,118 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 
   Serial.println(message);
 
-  if (strcmp(topic, mqtt_topic) == 0) {
-    if (message == "ON" && !doorOpening) {
-      digitalWrite(RELAY_PIN, LOW);
-      doorOpening = true;
-      doorOpenStart = millis();
+  // Xử lý message từ topic device/door/open
+  if (strcmp(topic, mqtt_topic_device_door_open) == 0) {
+    // Parse JSON message: {"door": "door_1"}
+    String doorName = parseJsonDoor(message);
+    
+    if (doorName.length() > 0) {
+      int doorIndex = getDoorIndex(doorName.c_str());
+      if (doorIndex >= 0 && doorIndex < 4) {
+        Serial.print("Opening door: ");
+        Serial.println(doorName);
+        openDoor(doorIndex);
+      } else {
+        Serial.print("Invalid door name: ");
+        Serial.println(doorName);
+      }
+    } else {
+      Serial.println("Failed to parse door name from JSON");
     }
   }
+}
+
+// Parse JSON message để lấy tên cửa
+// Format: {"door": "door_1"}
+String parseJsonDoor(const String& jsonMessage) {
+  // Tìm "door" trong JSON
+  int doorIndex = jsonMessage.indexOf("\"door\"");
+  if (doorIndex == -1) {
+    return "";
+  }
+  
+  // Tìm dấu " sau "door":
+  int colonIndex = jsonMessage.indexOf(":", doorIndex);
+  if (colonIndex == -1) {
+    return "";
+  }
+  
+  // Tìm dấu " đầu tiên sau dấu :
+  int quoteStart = jsonMessage.indexOf("\"", colonIndex);
+  if (quoteStart == -1) {
+    return "";
+  }
+  
+  // Tìm dấu " tiếp theo để kết thúc giá trị
+  int quoteEnd = jsonMessage.indexOf("\"", quoteStart + 1);
+  if (quoteEnd == -1) {
+    return "";
+  }
+  
+  return jsonMessage.substring(quoteStart + 1, quoteEnd);
+}
+
+// Lấy index của cửa từ tên cửa
+int getDoorIndex(const char* doorName) {
+  if (strcmp(doorName, DOOR_1) == 0) return 0;
+  if (strcmp(doorName, DOOR_2) == 0) return 1;
+  if (strcmp(doorName, DOOR_3) == 0) return 2;
+  if (strcmp(doorName, DOOR_4) == 0) return 3;
+  return -1;
+}
+
+// Lấy tên cửa từ index
+const char* getDoorName(int doorIndex) {
+  switch(doorIndex) {
+    case 0: return DOOR_1;
+    case 1: return DOOR_2;
+    case 2: return DOOR_3;
+    case 3: return DOOR_4;
+    default: return "";
+  }
+}
+
+// Lấy chân relay từ index cửa
+int getRelayPin(int doorIndex) {
+  switch(doorIndex) {
+    case 0: return RELAY_PIN_1;
+    case 1: return RELAY_PIN_2;
+    case 2: return RELAY_PIN_3;
+    case 3: return RELAY_PIN_4;
+    default: return -1;
+  }
+}
+
+// Lấy chân status từ index cửa
+int getStatusPin(int doorIndex) {
+  switch(doorIndex) {
+    case 0: return LOCK_STATUS_PIN_1;
+    case 1: return LOCK_STATUS_PIN_2;
+    case 2: return LOCK_STATUS_PIN_3;
+    case 3: return LOCK_STATUS_PIN_4;
+    default: return -1;
+  }
+}
+
+// Mở cửa (kích hoạt relay)
+void openDoor(int doorIndex) {
+  if (doorIndex < 0 || doorIndex >= 4) {
+    return;
+  }
+  
+  int relayPin = getRelayPin(doorIndex);
+  if (relayPin == -1) {
+    return;
+  }
+  
+  // Kích hoạt relay (LOW = mở)
+  digitalWrite(relayPin, LOW);
+  doorStates[doorIndex].opening = true;
+  doorStates[doorIndex].openStart = millis();
+  
+  Serial.print("Door ");
+  Serial.print(getDoorName(doorIndex));
+  Serial.println(" opening...");
 }
 
 void subscribeTopic(const char* topic) {
@@ -247,15 +401,102 @@ void subscribeTopic(const char* topic) {
   }
 }
 
+// Kiểm tra và xử lý nút bấm SEND và GET
+void checkButtonPresses() {
+  // Đọc trạng thái hiện tại của nút SEND
+  int currentButtonSendState = digitalRead(BUTTON_SEND_PIN);
+  
+  // Kiểm tra nếu trạng thái thay đổi (có thể do nhiễu hoặc nhấn nút)
+  if (currentButtonSendState != lastButtonSendState) {
+    // Reset timer debounce
+    lastDebounceTimeSend = millis();
+  }
+  
+  // Nếu đã đủ thời gian debounce
+  if ((millis() - lastDebounceTimeSend) > DEBOUNCE_DELAY) {
+    // Nếu nút được nhấn (LOW do INPUT_PULLUP)
+    if (currentButtonSendState == LOW && lastButtonSendState == HIGH) {
+      // Gửi message "SEND" đến topic server/door/execute
+      if (mqttConnected && client.connected()) {
+        publishMessage(mqtt_topic_server_door_execute, "SEND");
+        Serial.println("SEND button pressed - published SEND command");
+      } else {
+        Serial.println("MQTT not connected, cannot send SEND command");
+      }
+    }
+  }
+  
+  // Cập nhật trạng thái cuối cùng của nút SEND
+  lastButtonSendState = currentButtonSendState;
+  
+  // Đọc trạng thái hiện tại của nút GET
+  int currentButtonGetState = digitalRead(BUTTON_GET_PIN);
+  
+  // Kiểm tra nếu trạng thái thay đổi
+  if (currentButtonGetState != lastButtonGetState) {
+    // Reset timer debounce
+    lastDebounceTimeGet = millis();
+  }
+  
+  // Nếu đã đủ thời gian debounce
+  if ((millis() - lastDebounceTimeGet) > DEBOUNCE_DELAY) {
+    // Nếu nút được nhấn (LOW do INPUT_PULLUP)
+    if (currentButtonGetState == LOW && lastButtonGetState == HIGH) {
+      // Gửi message "GET" đến topic server/door/execute
+      if (mqttConnected && client.connected()) {
+        publishMessage(mqtt_topic_server_door_execute, "GET");
+        Serial.println("GET button pressed - published GET command");
+      } else {
+        Serial.println("MQTT not connected, cannot send GET command");
+      }
+    }
+  }
+  
+  // Cập nhật trạng thái cuối cùng của nút GET
+  lastButtonGetState = currentButtonGetState;
+}
+
 void setup() {
   Serial.begin(115200);
   Serial.setDebugOutput(true);
-  pinMode(RELAY_PIN, OUTPUT);
-  pinMode(LOCK_STATUS_PIN, INPUT_PULLUP);
-  digitalWrite(RELAY_PIN, HIGH);
-  Serial.println("System started. Press button to start camera stream.");
+  
+  // Khởi tạo các chân relay cho 4 cửa
+  pinMode(RELAY_PIN_1, OUTPUT);
+  pinMode(RELAY_PIN_2, OUTPUT);
+  pinMode(RELAY_PIN_3, OUTPUT);
+  pinMode(RELAY_PIN_4, OUTPUT);
+  
+  // Khởi tạo các chân status cho 4 cửa
+  pinMode(LOCK_STATUS_PIN_1, INPUT_PULLUP);
+  pinMode(LOCK_STATUS_PIN_2, INPUT_PULLUP);
+  pinMode(LOCK_STATUS_PIN_3, INPUT_PULLUP);
+  pinMode(LOCK_STATUS_PIN_4, INPUT_PULLUP);
+  
+  // Đặt tất cả relay ở trạng thái HIGH (đóng)
+  digitalWrite(RELAY_PIN_1, HIGH);
+  digitalWrite(RELAY_PIN_2, HIGH);
+  digitalWrite(RELAY_PIN_3, HIGH);
+  digitalWrite(RELAY_PIN_4, HIGH);
+  
+  // Đọc trạng thái ban đầu của các cửa
+  doorStates[0].lastLockState = digitalRead(LOCK_STATUS_PIN_1);
+  doorStates[1].lastLockState = digitalRead(LOCK_STATUS_PIN_2);
+  doorStates[2].lastLockState = digitalRead(LOCK_STATUS_PIN_3);
+  doorStates[3].lastLockState = digitalRead(LOCK_STATUS_PIN_4);
+  
+  Serial.println("System started. 4-door lock system initialized.");
 
-  // Configure button pin
+  // Khởi tạo các chân nút bấm SEND và GET
+  pinMode(BUTTON_SEND_PIN, INPUT_PULLUP);
+  pinMode(BUTTON_GET_PIN, INPUT_PULLUP);
+  
+  // Đọc trạng thái ban đầu của các nút
+  lastButtonSendState = digitalRead(BUTTON_SEND_PIN);
+  lastButtonGetState = digitalRead(BUTTON_GET_PIN);
+  
+  Serial.println("SEND and GET buttons initialized.");
+
+  // Configure button pin (if needed)
   pinMode(BUTTON_GPIO_NUM, INPUT_PULLUP);
 
   // Connect to WiFi
@@ -292,20 +533,52 @@ void loop() {
   }
   client.loop();
 
-  int lockState = digitalRead(LOCK_STATUS_PIN);
-  if (lockState != lastLockState) {
-    lastLockState = lockState;
+  // Kiểm tra nút bấm SEND và GET
+  checkButtonPresses();
 
-    if (lockState == LOW) {
-      client.publish("door/status", "LOCKED");
-    } else {
-      client.publish("door/status", "OPEN");
+  // Xử lý đóng relay sau thời gian mở cửa cho từng cửa
+  for (int i = 0; i < 4; i++) {
+    if (doorStates[i].opening && millis() - doorStates[i].openStart >= DOOR_OPEN_TIME) {
+      int relayPin = getRelayPin(i);
+      if (relayPin != -1) {
+        digitalWrite(relayPin, HIGH);
+        doorStates[i].opening = false;
+        Serial.print("Door ");
+        Serial.print(getDoorName(i));
+        Serial.println(" relay closed");
+      }
     }
   }
 
-  if (doorOpening && millis() - doorOpenStart >= DOOR_OPEN_TIME) {
-    digitalWrite(RELAY_PIN, HIGH);
-    doorOpening = false;
+  // Kiểm tra trạng thái đóng/mở của từng cửa
+  for (int i = 0; i < 4; i++) {
+    int statusPin = getStatusPin(i);
+    if (statusPin == -1) {
+      continue;
+    }
+    
+    int lockState = digitalRead(statusPin);
+    
+    // Nếu trạng thái thay đổi
+    if (lockState != doorStates[i].lastLockState) {
+      doorStates[i].lastLockState = lockState;
+      
+      const char* doorName = getDoorName(i);
+      
+      // LOW = cửa đóng (locked), HIGH = cửa mở (open)
+      if (lockState == LOW) {
+        // Cửa đã đóng - gửi message đến server
+        // Format: "door_1" hoặc JSON {"door": "door_1"}
+        publishMessage(mqtt_topic_server_door_status, doorName);
+        Serial.print("Door ");
+        Serial.print(doorName);
+        Serial.println(" closed (LOCKED)");
+      } else {
+        Serial.print("Door ");
+        Serial.print(doorName);
+        Serial.println(" opened");
+      }
+    }
   }
 
   delay(100); // Small delay to prevent excessive polling
