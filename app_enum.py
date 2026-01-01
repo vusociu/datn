@@ -1,5 +1,5 @@
 from enum import Enum
 
 class StatusDoor(Enum):
-    EMPTY = 1
-    USED = 2
+    OPEN = 1
+    CLOSED = 2
